@@ -1,0 +1,932 @@
+# whisker 2.1
+# main.test
+# 20021122
+# www.wiretrip.net/rfp/
+#
+# Copyright 2002 Rain Forest Puppy (the individual identified as such)
+#
+# This material is copyrighted.  Distributing, reusing, and/or reprinting
+# this material, in whole or in part, for any commercial purposes requires
+# permission from Rain Forest Puppy (rfp@wiretrip.net).
+#
+# Distributing and reprinting for non-commerical purposes is allowed only
+# if the material is distributed as a whole and unmodified.  Distributing
+# or reusing portions of the material for non-commercial purposes requires
+# permission from Rain Forest Puppy.
+#
+# This information is *not* licensed under the GPL.
+#
+
+push @{$G_HOOKS{TESTS}}, \&m_server_test;
+push @{$G_HOOKS{TESTS}}, \&m_coldfusion_test;
+push @{$G_HOOKS{TESTS}}, \&m_iis_test;
+push @{$G_HOOKS{TESTS}}, \&m_netware_test;
+push @{$G_HOOKS{TESTS}}, \&m_general_test;
+push @{$G_HOOKS{TESTS}}, \&m_dir_test;
+push @{$G_HOOKS{TESTS}}, \&m_dir_driller;
+
+# NOTE: preserver_test is special, and needs to be first; don't do this
+# with other/normal tests
+unshift(@{$G_HOOKS{TESTS}},\&m_preserver_test);
+
+$VAGUE='The exact reasons this CGI is vulnerable are not known to whisker; yet, this CGI is included in the standard list of vulnerable CGIs used by many vulnerability scanners, and thus it is included here as well.';
+
+############################################################################
+
+sub m_preserver_test {
+	#
+	# The preserver test is very special and important--first, it handles
+	# the checking for custom 404 pages, and configures whisker to
+	# respond appropriately (the values it sets are used by the internal
+	# d_response in order to manipulate the result).  Secondly, it
+	# fingerprints the server and adjusts the server banner accordingly,
+	# which could change how all future tests are ran: hence, it needs
+	# to be the first thing ran.
+	#
+
+	my %req; _ch(\%G_REQ,\%req);
+	
+        $req{whisker}->{uri}='/';
+        &_shutdown if(_do_request(\%req,\%G_RESP));
+
+        my $code=$G_RESP{whisker}->{code};
+        if($code!=200 && $code!=302 && $code!=401){
+                my $text=<<EOT;
+A request to the root URL (/) on the server results in a $code response,
+which is abnormal; scanning results may be skewed/affected.
+EOT
+                wlog(id=>104,text=>$text,severity=>'Informational',
+                        title=>'Abnormal root URL request');
+        }
+
+        if($code==401){
+                my $text=<<EOT;
+The server requires authentication in order to access the root URL (/).  
+It is typical in this situation that the server require authentication for
+every request on the site--however whisker will still attempt to continue.
+To provide authentication to the server, use the -a command line option.  
+If you did provide authentication, then it's possible the username/
+password you supplied were incorrect or invalid for that particular
+resource.
+EOT
+                wlog(id=>105,text=>$text,severity=>'Informational',
+                        title=>'Root URL requires auth');
+        }
+
+
+        if(!defined $G_RESP{server}){
+                my $text=<<EOT;
+The server did not return a Server banner.  Whisker will attempt to
+continue, but you may get better results if you use the -G
+(generic) option, or force a particular Server banner via the -S option.
+It's also possible that the server will be identified by future tests.
+EOT
+                wlog(id=>100,text=>$text,severity=>'Informational', 
+                        title=>'No server banner');
+        } else {
+                my $text=<<EOT;
+The server returned the following banner:
+        $G_RESP{server}
+EOT
+                wlog(id=>100,text=>$text,severity=>'Informational',
+                        title=>'Server banner');
+                wserver( $G_RESP{server},1 );
+        }
+
+        my $random=LW::utils_randstr();
+        $req{whisker}->{uri}="/$random";        
+        &_shutdown if(_do_request(\%req,\%G_RESP));
+        if($G_RESP{whisker}->{code}!=404){
+                # Custom 404 correction code
+                my $phase_two=0;
+                if($G_RESP{whisker}->{code}==302){
+                        $phase_two=302;
+                        $G_CONFIG{'302_as_404'}++;
+                        $G_CONFIG{'302_as_404_data'}=$G_RESP{'location'};
+                } elsif($G_RESP{whisker}->{code}==200){
+                        $phase_two=200;
+                        $G_CONFIG{'200_as_404'}++;
+                        $G_CONFIG{'200_as_404_data'}=LW::md5($G_RESP{whisker}->{data});
+                } else {
+                        my $c=$G_RESP{whisker}->{code};
+                        my $text=<<EOT; 
+The server returned an abnormal response ($c) to our 404 tests.  This
+means whisker may not be able to determine if a CGI actually exists, and
+thus the scan results are most likely going to be unreliable.
+EOT
+                        wlog(id=>106,text=>$text,severity=>'Informational',
+                                title=>'Abnormal 404 response');
+                }
+                if($phase_two){
+                        my (%ao,$bo);
+                        my %a; _ch(\%req,\%a);
+                        my %b; _ch(\%req,\%b);
+                        $a{whisker}->{uri}.='-1'.LW::utils_randstr;
+                        $b{whisker}->{uri}.='-2'.LW::utils_randstr;
+                        &_shutdown if(_do_request(\%req,\%G_RESP));
+                        &_shutdown if(_do_request(\%a,\%ao));
+                        &_shutdown if(_do_request(\%b,\%bo));
+
+                        if($phase_two==200){
+                                my $md0=$G_CONFIG{'200_as_404_data'};
+                                my $md1=LW::md5($G_RESP{whisker}->{data});
+                                my $md2=LW::md5($ao{whisker}->{data});
+                                my $md3=LW::md5($bo{whisker}->{data});
+                                if($md1 ne $md2 || $md1 ne $md3 || $md1 ne $md0){
+                                        my $text=<<EOT; 
+The server is using a non-static custom 404 page.  This is beyond
+whisker's current capabilities to cope with, and thus will make the scan
+results unreliable.  This is also, technically, non-RFC compliant.
+EOT
+                                        wlog(id=>106,text=>$text,severity=>'Informational',
+                                                title=>'Dynamic custom 404 page');
+                                } else {
+                                        # seems to be the same static 200 page
+                                        $G_CONFIG{'404_alternate'}=200;
+                                        my $text=<<EOT; 
+The server is using a static custom 404 page.  Fortunately, since it's
+static, whisker should be able to accomodate it--and thus the scan results
+should be unchanged for the most part.
+EOT
+                                        wlog(id=>106,text=>$text,severity=>'Informational',
+                                                title=>'Static custom 404 page');
+                        }       }
+                        if($phase_two==302){
+                                my $l0=$G_CONFIG{'302_as_404_data'};
+                                my $l1=$G_RESP{location};
+                                my $l2=$ao{location};
+                                my $l3=$bo{location};
+                                if($l1 ne $l2 || $l1 ne $l3 || $l1 ne $l0){
+                                        my $text=<<EOT; 
+The server issues 302 (redirect) responses instead of 404 responses, and
+unfortunately, the redirect locations differ.  This is beyond whisker's
+current capabilities to cope with, and thus will make the scan results
+unreliable.
+EOT
+                                        wlog(id=>106,text=>$text,severity=>'Informational',
+                                                title=>'Dynamic custom 404 move location');
+                                } else {
+                                        # seems to be the same static 200 page
+                                        $G_CONFIG{'404_alternate'}=302;
+                                        my $text=<<EOT; 
+The server seems to be issuing 302 redirects instead of 404 responses;
+fortunately, all the redirects go to the same location, so whisker should
+be able to accomodate it--and thus the scan results should be unchanged
+for the most part.
+EOT
+                                        wlog(id=>106,text=>$text,severity=>'Informational',
+                                                title=>'Static custom 404 move location');
+                        }       }
+        }       } # end of grody custom-404-correction code
+
+	# now do some light fingerprinting...
+        my $Iflag=0;
+        $req{whisker}->{uri}='/global.asa';
+        if(!_do_request(\%req,\%G_RESP)){
+                if($G_RESP{whisker}->{code}==500){
+                        $req{whisker}->{uri}='/global2.asa';
+                        if(!_do_request(\%req,\%G_RESP)){
+                                _d_response(\%G_RESP);
+                                $Iflag++ if($G_RESP{whisker}->{code}==404);
+        }       }       }
+        
+        m_re_banner('Microsoft-IIS',$Iflag);
+        
+        my $Aflag=0;
+        $req{whisker}->{uri}='//';
+        if(!_do_request(\%req,\%G_RESP)){
+                _d_response(\%G_RESP);
+                if($G_RESP{whisker}->{code}==200){
+                        $req{whisker}->{uri}='/%2f';
+                        if(!_do_request(\%req,\%G_RESP)){
+                                _d_response(\%G_RESP);
+                                $Aflag++ if($G_RESP{whisker}->{code}==404);
+        }       }       }
+        
+        m_re_banner('Apache',$Aflag);
+
+}
+
+sub m_re_banner {
+	my ($name,$flag)=@_;
+
+	if(!$flag){
+		if(wserver($name)){
+			my $text=<<EOT;
+Testing has determined that the server may not necessarily be an '$name'
+server due to it not responding correctly to certain requests.  This means
+that the admin may have changed the server banner to subvert attackers.
+EOT
+			wlog(id=>103,text=>$text,severity=>'Informational',
+				title=>'Alternate server type');
+		}
+		return;
+	}
+
+	if(!wserver($name)){
+		my $text=<<EOT;
+Testing has identified the server might be a '$name' server. This change
+could be due to the server not correctly identifing itself (the admins
+changed the banner).  Tests will now check for this server type as well
+as the previously identified server types.
+EOT
+		wlog(id=>103,text=>$text,severity=>'Informational',
+			title=>'Alternate server type');
+		wserver($name,1);
+	}
+}
+
+############################################################################
+
+sub m_server_test {
+
+	# default page tests
+	my ($def,$md)=(0,'');
+	my %req;
+	_ch(\%G_REQ,\%req);
+	$req{whisker}->{uri}='/';
+	if(!_do_request(\%req,\%G_RESP)){
+		$md=LW::md5($G_RESP{whisker}->{data}); }
+
+	$def++ if(wserver('IIS/2.0') &&	$md eq '397bd21522d3aca4c2c201e71e77cc95');
+	$def++ if(wserver('IIS/3.0') &&	$md eq '397bd21522d3aca4c2c201e71e77cc95');
+	$def++ if(wserver('IIS/5.0') &&	$md eq '39144fd6a56f2ab2f7f9d5a2c82d68c0');
+
+	if($def){
+		my $text=<<EOT;
+The default installation web page was found on the server.  This typically
+means that the server is not in use or is otherwise forgotten about, and
+thus could be behind on patches or other web configuration maintenance.
+EOT
+		wlog(id=>108,text=>$text,title=>'Default installation web page found',
+			severity=>'Informational');
+	}
+
+	$req{whisker}->{uri}='*';
+	$req{whisker}->{method}='OPTIONS';
+	if(!_do_request(\%req,\%G_RESP)){
+		my $public = LW::utils_find_lowercase_key(\%G_RESP,'public');
+		my $allow = LW::utils_find_lowercase_key(\%G_RESP,'allow');
+		my $text='';
+		if(defined $public){
+			$text=<<EOT;
+The server responded to an OPTIONS query with the following public methods:
+$public
+EOT
+		}
+		if(defined $allow){
+			$text.=<<EOT;
+The allowed methods for '/' are:
+$allow
+EOT
+		}
+		wlog(id=>109,text=>$text,title=>'Server OPTIONS results',
+			severity=>'Informational') if($text ne '');
+	}
+
+	if(wserver('iis/5')){
+		$req{whisker}->{uri}='/looking-for-a-404.html';
+		$req{whisker}->{method}='GET';
+		if(!_do_request(\%req,\%G_RESP) && $G_RESP{whisker}->{code}==404){
+			my $md5=LW::md5( $G_RESP{whisker}->{data} );
+			my $splevel = '';
+			$splevel='Native Win2K or Win2K SP1' if
+				($md5 eq 'deb5647b3bf685996436ecc13de08564');
+			$splevel='Win2K SP2 or Win2K SRP1' if
+				($md5 eq 'e1360eaccef8559d403d84a24b4cd209');
+			$splevel='Win2K IIS-SRP1 (MS02-018) or SP3' if
+				($md5 eq '979b3d197cf71be7f98c9d9e9acb61c0');
+
+			if($splevel ne ''){
+				my $text=<<EOT;
+Testing indicates server patch level to be at or after the following level:
+$splevel
+EOT
+				wlog(id=>111,title=>'Server patch level',
+					severity=>'Informational',
+					text=>$text);
+			}
+		}
+	}
+
+}
+
+##########################################################################
+
+sub m_coldfusion_test {
+
+ if(wtest(102)){
+	my $random=LW::utils_randstr();
+	if(defined $G_IDS{102} || wexist('/',"whisker-2-$random.cfm")){
+		my $text=<<EOT;
+Allaire/Macromedia ColdFusion was found to be installed on the server.  
+ColdFusion has various security problems which are not possible to scan
+for.  The following CVE entries indicate potential vulnerabilities which
+may exist on the server:
+
+1999-0760	2000-0050	2000-0051
+2000-0297	2000-0334	2000-0410
+2000-0862	2000-1049	2000-1051
+2000-1050	2001-0179
+EOT
+		wdisplay(id=>102,title=>'ColdFusion installed',text=>$text,
+				severity=>'Informational');
+	}
+ }
+
+	wgeneral('/,scripts,cfdocs,@spider','cfcache.map',id=>'501',bid=>'917',cve=>'2000-0057');
+	wgeneral('cfdocs','cfmlsyntaxcheck.cfm',id=>'502',cve=>'1999-0924');
+	wgeneral('cfide/administrator','startstop.html',id=>'503',cve=>'1999-0756');
+	wgeneral('cfide/administrator','index.cfm',id=>'505',bid=>'1314',cve=>'2000-0538');
+	wgeneral('cfdocs/snippets','evaluate.cfm',id=>'506');
+	wgeneral('cfdocs/snippets','fileexists.cfm',id=>'507');
+	wgeneral('cfdocs/snippets','gettempdirectory.cfm',id=>'508');
+	wgeneral('cfdocs/snippets','viewexample.cfm',id=>'510');
+	wgeneral('cfdocs/exampleapp','publish/admin/addcontent.cfm',id=>'511');
+	wgeneral('cfdocs/exampleapp','email/getfile.cfm',id=>'512',cve=>'1999-0800');
+	wgeneral('cfdocs/expeval','exprcalc.cfm',id=>'513',bid=>'115',cve=>'1999-0455');
+	wgeneral('cfdocs/expeval','sendmail.cfm',id=>'514');
+	wgeneral('cfdocs/examples','httpclient/mainframeset.cfm',id=>'515');
+	wgeneral('cfdocs/examples','cvbeans/beaninfo.cfm',id=>'517');
+	wgeneral('cfdocs/examples','parks/detail.cfm',id=>'518');
+	wgeneral('allaire/spectra,i-build,allaire/spectra/restorenet','invoke.cfm',id=>'520',bid=>'955',cve=>'2000-0120');
+	wgeneral('/,@spider','onrequestend.cfm',id=>'522',bid=>'1021',cve=>'2000-0189');
+	wgeneral('/,@spider','application.cfm',id=>'523',bid=>'1021',cve=>'2000-0189');
+	wgeneral('/','cfappman/index.cfm',id=>'524');
+	wgeneral('cgi-bin','dbmlparser.exe',id=>'525');
+
+}
+
+##########################################################################
+
+sub m_iis_test {
+
+	wgeneral('scripts','cpshost.dll',id=>'600');
+	if(wserver('iis')){
+		wgeneral('/','samples/search/queryhit.htm',id=>'601');
+	}
+	wgeneral('/','adsamples/config/site.csc',id=>'602',bid=>'256',cve=>'1999-1520');
+	wgeneral('scripts','counter.exe',id=>'604');
+	wgeneral('scripts','repost.asp',id=>'605');
+	wgeneral('scripts','postinfo.asp',id=>'606');
+	wgeneral('scripts/samples','search/webhits.exe',id=>'607');
+	if(wserver('iis')){
+		wgeneral('scripts/iisadmin','ism.dll',id=>'608',bid=>'1193',cve=>'2000-0457');
+		wgeneral('scripts/iisadmin','ism.dll',id=>'609');
+		wgeneral('iissamples/exair/howitworks','Codebrws.asp',id=>'610',bid=>'167',cve=>'1999-0736');
+		wgeneral('iissamples/exair/howitworks','Code.asp',id=>'612',bid=>'167',cve=>'1999-0736');
+		wgeneral('iissamples/exair/howitworks','Codebrw1.asp',id=>'613',bid=>'167',cve=>'1999-0736');
+		wgeneral('iissamples/sdk/asp/docs','codebrws.asp',id=>'614',bid=>'167',cve=>'1999-0736');
+		wgeneral('iissamples/sdk/asp/docs','codebrw2.asp',id=>'616',bid=>'167',cve=>'1999-0736');
+		wgeneral('msadc/samples/selector','showcode.asp',id=>'617',bid=>'167',cve=>'1999-0736');
+		wgeneral('sites/knowledge/membership','inspired/viewcode.asp',id=>'618',bid=>'167',cve=>'1999-0736');
+		wgeneral('sites/knowledge/membership','inspiredtutorial/viewcode.asp',id=>'620',bid=>'167',cve=>'1999-0736');
+		wgeneral('sites/samples/knowledge/membership','inspired/viewcode.asp',id=>'621',bid=>'167',cve=>'1999-0736');
+		wgeneral('sites/samples/knowledge/membership','inspiredtutorial/viewcode.asp',id=>'622',bid=>'167',cve=>'1999-0736');
+		wgeneral('sites/samples/knowledge','push/viewcode.asp',id=>'624',bid=>'167',cve=>'1999-0736');
+		wgeneral('sites/samples/knowledge','search/viewcode.asp',id=>'626',bid=>'167',cve=>'1999-0736');
+		wgeneral('/','siteserver/publishing/viewcode.asp',id=>'627');
+		wgeneral('msadc','samples/adctest.asp',id=>'628');
+		wgeneral('/','advworks/equipment/catalog_type.asp',id=>'629',text=>$VAGUE);
+		wgeneral('/','iisadmpwd/aexp4b.htr',id=>'630');
+		wgeneral('scripts/samples','details.idc',id=>'631',bid=>'286');
+		wgeneral('scripts/samples','ctguestb.idc',id=>'633',bid=>'286');
+		wgeneral('scripts','tools/newdsn.exe',id=>'634',bid=>'1818',cve=>'1999-0191');
+		wgeneral('msadc','msadcs.dll',id=>'635',bid=>'529',cve=>'1999-1011');
+		wgeneral('scripts','iisadmin/bdir.htr',id=>'636');
+		wgeneral('certsrv,certcontrol,certenroll','/',id=>'637');
+	}
+	wgeneral('/','carbo.dll',id=>'639');
+	wgeneral('/','prd.I/pgen/',id=>'641');
+
+	if(wserver('website')){
+		wgeneral('/','cgi-dos/args.bat',id=>'800');
+		wgeneral('/','cgi-win/uploader.exe',id=>'801');
+		wgeneral('cgi-shl','win-c-sample.exe',id=>'803');
+	}
+	wgeneral('@cgibin','webbbs.exe',id=>'804',text=>$VAGUE);
+	wgeneral('@cgibin','perl.exe',id=>'805');
+	wgeneral('@cgibin','testcgi.exe',id=>'806');
+	wgeneral('@cgibin','cgitest.exe',id=>'808');
+	wgeneral('@cgibin','rguest.exe',id=>'809');
+	wgeneral('@cgibin','wguest.exe',id=>'810');
+	wgeneral('@cgibin','cgimail.exe',id=>'811');
+	wgeneral('cgi-bin','get32.exe',id=>'812',bid=>'770',cve=>'1999-0885');
+	wgeneral('cgi-bin','tst.bat',id=>'813',text=>$VAGUE);
+	wgeneral('@cgibin','officescan/cgi/jdkRqNotify.exe',id=>'814');
+	wgeneral('@cgibin','ppdscgi.exe',id=>'815');
+	wgeneral('@cgibin','minimal.exe',id=>'821',text=>$VAGUE);
+	wgeneral('@cgibin','redir.exe',id=>'822',text=>$VAGUE);
+	wgeneral('@cgibin','visitor.exe',id=>'823',text=>$VAGUE);
+
+	wgeneral('/','_vti_inf.html',id=>'750');
+	wgeneral('_private,_vti_bin,_vti_pvt,_vti_log,_vti_txt,_vti_cnf','/',id=>'751');
+	wgeneral('_private,_vti_bin,_vti_pvt,_vti_log,_vti_txt,_vti_cnf','_vti_cnf',id=>'752');
+	wgeneral('_vti_bin','shtml.[dll,exe]',id=>'753');
+	wgeneral('_vti_pvt','writeto.cnf',id=>'756');
+	wgeneral('_vti_pvt','svcacl.cnf',id=>'757');
+	wgeneral('_vti_pvt','service.cnf',id=>'758');
+	wgeneral('_vti_pvt','services.cnf',id=>'759');
+	wgeneral('_vti_pvt','access.cnf',id=>'761');
+	wgeneral('_private','registrations.txt',id=>'762');
+	wgeneral('_private','register.exe',id=>'763');
+	wgeneral('_private','orders.txt',id=>'764');
+	wgeneral('_private','form_results.txt',id=>'765');
+	wgeneral('_private','registrations.htm',id=>'767');
+	wgeneral('_private','register.htm',id=>'768');
+	wgeneral('_private','orders.htm',id=>'769');
+	wgeneral('_private','form_results.htm',id=>'770');
+	wgeneral('_vti_pvt','users.pwd',id=>'772');
+	wgeneral('_vti_pvt','administrator.pwd',id=>'775');
+	wgeneral('_vti_pvt','authors.pwd',id=>'776');
+	wgeneral('_vti_pvt','service.pwd',id=>'777');
+	wgeneral('_vti_bin','_vti_aut/author.dll',id=>'778');
+	wgeneral('_vti_bin','_vti_aut/author.exe',id=>'779');
+	wgeneral('@cgibin,_vti_bin','fpsrvadm.exe',id=>'780');
+	wgeneral('@cgibin,_vti_bin','fpremadm.exe',id=>'781');
+	wgeneral('@cgibin,_vti_bin','admin.pl',id=>'782');
+	wgeneral('@cgibin,_vti_bin','cfgwiz.exe',id=>'783');
+	wgeneral('@cgibin,_vti_bin,admcgi','contents.htm',id=>'784');
+	wgeneral('@cgibin,_vti_bin,admcgi,/','scripts/Fpadmcgi.exe',id=>'786');
+	wgeneral('@cgibin,_vti_bin,admisapi','fpadmin.htm',id=>'787');
+	wgeneral('scripts','fpcount.exe',id=>'788');
+
+}
+
+##########################################################################
+
+sub m_general_test {
+
+	wgeneral('cgi-bin','webdist.cgi',id=>'1000');
+	wgeneral('cgi-bin','handler',id=>'1001');
+	wgeneral('cgi-bin','wrap',id=>'1002');
+	wgeneral('cgi-bin','pfdisplay.cgi',id=>'1003');
+	wgeneral('cgi-bin','MachineInfo',id=>'1006');
+	wgeneral('cgi-bin','day5datacopier.cgi',id=>'1005');
+
+	wgeneral('/','mall_log_files/order.log',id=>'1100');
+	wgeneral('PDG_Cart','shopper.conf',id=>'1101');
+	wgeneral('PDG_Cart','order.log',id=>'1102');
+	wgeneral('/','quikstore.cfg',id=>'1103');
+	wgeneral('orders','orders.[txt,log]',id=>'1104');
+	wgeneral('orders','mountain.cfg',id=>'1106');
+	wgeneral('/','Admin_files/order.log',id=>'1107');
+	wgeneral('WebShop','logs/cc.txt',id=>'1108');
+	wgeneral('WebShop','templates/cc.txt',id=>'1109');
+	wgeneral('/','pw/storemgr.pw',id=>'1110');
+	wgeneral('scripts','cart32.exe',id=>'1111');
+	wgeneral('scripts','c32web.exe',id=>'1113');
+	wgeneral('webcart,webcart-lite','orders/',id=>'1114');
+	wgeneral('webcart,webcart-lite','config/',id=>'1115');
+	wgeneral('webcart,webcart-lite','orders/carts/',id=>'1116');
+	wgeneral('webcart,webcart-lite','carts/',id=>'1117');
+	wgeneral('webcart,webcart-lite','orders/import.txt',id=>'1118');
+	wgeneral('webcart,webcart-lite','config/clients.txt',id=>'1120');
+
+	wgeneral('/,cgi-bin','icat',id=>'2001',text=>$VAGUE);
+	wgeneral('@cgibin','flexform[@PERL]',id=>'2002');
+	wgeneral('@cgibin','LWGate[@PERL]',id=>'2003');
+	wgeneral('@cgibin','pu3.pl',id=>'2004',text=>$VAGUE);
+	wgeneral('@cgibin','alibaba[@PERL]',id=>'2005',text=>$VAGUE);
+	wgeneral('@cgibin','meta.pl',id=>'2006',text=>$VAGUE);
+	wgeneral('@cgibin','webutils.pl',id=>'2008',text=>$VAGUE);
+	wgeneral('@cgibin','tigvote.cgi',id=>'2009',text=>$VAGUE);
+	wgeneral('@cgibin','tpgnrock[,.cgi]',id=>'2010',text=>$VAGUE);
+	wgeneral('@cgibin','webwho.pl',id=>'2011',text=>$VAGUE);
+	wgeneral('@cgibin','form[@PERL]',id=>'2012');
+	wgeneral('@cgibin','message.cgi',id=>'2013',text=>$VAGUE);
+	wgeneral('cgi-bin','.cobalt/siteUserMod/siteUserMod.cgi',id=>'2014');
+	wgeneral('@cgibin','.fhp',id=>'2015',text=>$VAGUE);
+	wgeneral('@cgibin','htsearch[@PERL]',id=>'2017');
+	wgeneral('@cgibin','plusmail',id=>'2018',text=>$VAGUE);
+	wgeneral('/','manage/cgi/cgiproc',id=>'2019');
+	wgeneral('@cgibin','ultraboard[@PERL]',id=>'2020',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','perlshop[@PERL]',id=>'2021');
+	wgeneral('@cgibin','download[@PERL]',id=>'2022',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','bnbform[@PERL]',id=>'2023');
+	wgeneral('@cgibin','cgi-lib.pl',id=>'2024',text=>$VAGUE);
+	wgeneral('@cgibin','post_query',id=>'2026',text=>$VAGUE);
+	wgeneral('@cgibin','upload[@PERL]',id=>'2027',text=>$VAGUE);
+	wgeneral('@cgibin','rwwwshell.pl',id=>'2028');
+	wgeneral('@cgibin','nlog-smb[@PERL]',id=>'2029');
+	wgeneral('@cgibin,@cgibin/wwwboard,wwwboard','wwwboard[@PERL]',id=>'2030',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','anacondaclip[@PERL]',id=>'2031');
+	wgeneral('@cgibin','webmap.cgi',id=>'2032');
+	wgeneral('site/eg','source.asp',id=>'2034',bid=>'1457',cve=>'2000-0628');
+	wgeneral('@cgibin','auktion[@PERL]',id=>'2035',bid=>'2367',cve=>'2001-0212');
+	wgeneral('ans,@cgibin,@cgibin/ans','ans[@PERL]',id=>'2036');
+	wgeneral('@cgibin/inc,inc','sendmail.inc',id=>'2037');
+	wgeneral('@cgibin/class,class','mysql.class',id=>'2038');
+	wgeneral('@cgibin','cachemgr.cgi',id=>'2039',cve=>'1999-0710');
+	if(wserver('apache')){
+		wgeneral('/','docs/',id=>'2040');
+	}
+	wgeneral('/','/~root/',id=>'2041');
+	wgeneral('@cgibin','htgrep[@PERL]',id=>'2042');
+	wgeneral('@cgibin','ax-admin.cgi',id=>'2044');
+	wgeneral('@cgibin','axs.cgi',id=>'2045');
+	wgeneral('@cgibin','responder.cgi',id=>'2046',text=>$VAGUE);
+	wgeneral('@cgibin','w3-sql',id=>'2047');
+	wgeneral('/,search97cgi','search97.vts',id=>'2048');
+	wgeneral('/,search97cgi','search.vts',id=>'2049');
+	wgeneral('search97cgi','s97_cgi',id=>'2050');
+	wgeneral('@cgibin','phf',id=>'2052');
+	wgeneral('@cgibin','unlg1.1[,.cgi]',id=>'2053');
+	wgeneral('@cgibin','unlg1.2[,.cgi]',id=>'2054');
+	wgeneral('@cgibin','gH.cgi',id=>'2055');
+	wgeneral('@cgibin','test-cgi',id=>'2056');
+	if(wserver('ncsa')){
+		wgeneral('cgi-bin','php.cgi',id=>'2057');
+	}
+	wgeneral('@cgibin','campas',id=>'2058',cve=>'1999-0146');
+
+	if(wserver('ncsa/1.5')){
+		wgeneral('cgi-bin,htbin','test-env',id=>'2059');
+		wgeneral('cgi-bin,htbin','test-cgi',id=>'2060');
+		wgeneral('cgi-bin,htbin','test-cgi.tcl',id=>'2062');
+		wgeneral('cgi-bin,htbin','nph-test-cgi',id=>'2063');
+		wgeneral('cgi-bin,htbin','archie',id=>'2064');
+		wgeneral('cgi-bin,htbin','calendar',id=>'2065');
+		wgeneral('cgi-bin,htbin','date',id=>'2066');
+		wgeneral('cgi-bin,htbin','finger',id=>'2067',notice=>'CGI name is common with non-exploitable CGIs');
+		wgeneral('cgi-bin,htbin','fortune',id=>'2068');
+		wgeneral('cgi-bin,htbin','uptime',id=>'2070');
+		wgeneral('cgi-bin,htbin','wais.pl',id=>'2071');
+		wgeneral('cgi-bin,htbin','mail',id=>'2072',notice=>'CGI name is common with non-exploitable CGIs');
+		wgeneral('cgi-bin,htbin','query',id=>'2073',notice=>'CGI name is common with non-exploitable CGIs',text=>$VAGUE);
+	}
+
+	wgeneral('@cgibin','query',id=>'2074',bid=>'896',cve=>'2000-0039',notice=>'CGI name is common with non-exploitable CGIs');
+	if(wserver('netscape')){
+		wgeneral('/','publisher/',id=>'2075');
+	}
+	wgeneral('@cgibin','www-sql',id=>'2076');
+	wgeneral('@cgibin','w3-msql',id=>'2078');
+	wgeneral('@cgibin','view-source',id=>'2079');
+	wgeneral('@cgibin','add_ftp.cgi',id=>'2080',text=>$VAGUE);
+	if(wserver('apache')){
+		wgeneral('@cgibin','cgiwrap',id=>'2081',bid=>'777',cve=>'1999-1530',notice=>'CGI name is common with non-exploitable CGIs');
+	}
+	wgeneral('@cgibin','guestbook[@PERL]',id=>'2082');
+	wgeneral('@cgibin','edit.pl',id=>'2083',text=>$VAGUE);
+	wgeneral('@cgibin','webbbs[@PERL]',id=>'2084');
+	wgeneral('@cgibin','whois_raw.cgi',id=>'2085');
+	wgeneral('@cgibin','commerce[@PERL]',id=>'2087',bid=>'2361',cve=>'2001-0210',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','AnyBoard.cgi',id=>'2088');
+	wgeneral('@cgibin','code[@PHP]',id=>'2089');
+	wgeneral('@cgibin','dumpenv[@PERL]',id=>'2090',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','admin[@PHP]',id=>'2091');
+	wgeneral('/','reviews/newpro.cgi',id=>'2092');
+	wgeneral('/','piranha/secure/passwd[@PHP]',id=>'2093');
+	wgeneral('@cgibin','sojourn.cgi',id=>'2094',text=>$VAGUE);
+	wgeneral('@cgibin','dfire.cgi',id=>'2096');
+	wgeneral('@cgibin','spin_client.cgi',id=>'2097',text=>$VAGUE);
+	wgeneral('@cgibin','Count[@PERL]',id=>'2098',bid=>'128',cve=>'1999-0021',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','statsconfig',id=>'2099');
+	wgeneral('@cgibin','stats.prf',id=>'2100',text=>$VAGUE);
+	wgeneral('/','srchadm',id=>'2101',text=>$VAGUE);
+	wgeneral('/','users/scripts/submit.cgi',id=>'2102');
+	wgeneral('scripts/dbman','db.cgi',id=>'2103',bid=>'1178',cve=>'2000-0381');
+	wgeneral('@cgibin','nph-test-cgi',id=>'2104');
+	wgeneral('@cgibin','webgais',id=>'2106');
+	wgeneral('@cgibin','websendmail',id=>'2107');
+	wgeneral('@cgibin','bb-hist.sh',id=>'2108',bid=>'142',cve=>'1999-1462');
+	wgeneral('@cgibin','bb-hostsvc.sh',id=>'2109',bid=>'1455',cve=>'2000-0638');
+	wgeneral('bb-dnbd,@cgibin','faxsurvey',id=>'2110');
+	wgeneral('@cgibin','htmlscript',id=>'2111');
+	wgeneral('@cgibin','aglimpse[@PERL]',id=>'2112');
+	wgeneral('@cgibin','glimpse[@PERL]',id=>'2114');
+	wgeneral('@cgibin','man.sh',id=>'2115');
+	wgeneral('@cgibin','architext_query[@PERL]',id=>'2116');
+	wgeneral('@cgibin','excite',id=>'2117');
+	wgeneral('@cgibin','getdoc.cgi',id=>'2118');
+	wgeneral('@cgibin','webplus',id=>'2119');
+	wgeneral('@cgibin','bizdb1-search.cgi',id=>'2120',bid=>'1104',cve=>'2000-0287');
+	wgeneral('@cgibin','cart[@PERL]',id=>'2121',text=>$VAGUE);
+	wgeneral('@cgibin','filemail[@PERL]',id=>'2122',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','php.cgi',id=>'2123');
+	wgeneral('@cgibin','jj[,.c]',id=>'2125',cve=>'1999-0260');
+	wgeneral('@cgibin','info2www',id=>'2126');
+	wgeneral('@cgibin','nph-publish',id=>'2127');
+	wgeneral('@cgibin','ax.cgi',id=>'2128');
+	wgeneral('@cgibin','ax-admin.cgi',id=>'2129');
+	wgeneral('/','session/admnlogin',id=>'2130');
+	wgeneral('@cgibin','rpm_query',id=>'2131');
+	wgeneral('@cgibin','AnyForm[,2]',id=>'2132');
+	wgeneral('@cgibin','textcounter[@PERL]',id=>'2133');
+	wgeneral('wwthreads,@cgibin/wwwthreads','w3tvars.pm',id=>'2134');
+	wgeneral('wwthreads,@cgibin/wwwthreads','3tvars.pm',id=>'2136');
+	wgeneral('@cgibin','classified[@PERL]',id=>'2137',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','classifieds[@PERL]',id=>'2138',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','ss.cfg',id=>'2139',text=>$VAGUE);
+	wgeneral('@cgibin','ncl_items.html',id=>'2140',text=>$VAGUE);
+	wgeneral('@cgibin','survey[@PERL]',id=>'2141',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('/','test/test.cgi',id=>'2142');
+	wgeneral('@cgibin','search[@PERL]',id=>'2144',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','c_download.cgi',id=>'2145',text=>$VAGUE);
+	wgeneral('@cgibin','ntitar.pl',id=>'2146',text=>$VAGUE);
+	wgeneral('@cgibin','enter.cgi',id=>'2147',text=>$VAGUE);
+	wgeneral('@cgibin','dig.cgi',id=>'2148',text=>$VAGUE);
+	wgeneral('@cgibin','tidfinder.cgi',id=>'2149',text=>$VAGUE);
+	wgeneral('@cgibin','tablebuild.pl',id=>'2150',text=>$VAGUE);
+	wgeneral('@cgibin','displayTC.pl',id=>'2152',text=>$VAGUE);
+	wgeneral('cgi-bin,scripts','dasp/fm_shell.asp',id=>'2153');
+	wgeneral('@cgibin','printenv',id=>'2154');
+	wgeneral('@cgibin','environ[@PERL]',id=>'2155');
+	wgeneral('@cgibin','session/adminlogin',id=>'2156');
+	wgeneral('@cgibin','finger[@PERL]',id=>'2157',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','maillist[@PERL]',id=>'2158',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('@cgibin','[sh,bash,ash,tcsh,ksh,csh,rksh,rsh,zsh]',id=>'2159');
+	wgeneral('@cgibin','perl',id=>'2160');
+	wgeneral('@cgibin','test-cgi.tcl',id=>'2161');
+	wgeneral('/,@cgibin,php','mlog.phtml',id=>'2162');
+	wgeneral('/,@cgibin,php','mylog.phtml',id=>'2164');
+	wgeneral('@cgibin','calendar_admin[@PERL]',id=>'2165',bid=>'1215',cve=>'2000-0432',notice=>'CGI name is common with non-exploitable CGIs');
+	wgeneral('servlet','sunexamples.BBoardServlet',id=>'2166',bid=>'1459',cve=>'2000-0629');
+	wgeneral('@cgibin,@cgibin/cgiemail','cgicso',id=>'2167');
+	wgeneral('@cgibin','cgiforum[@PERL]',id=>'2168',bid=>'1963',cve=>'2000-1171',notice=>'CGI name is common with non-exploitable CGIs');
+	if(wserver('neowebscript')){
+		wgeneral('neowebscript/test,neowebscript/tests','environment.nhtml',id=>'2169');
+		wgeneral('neowebscript/test,neowebscript/tests','load_webenv.nhtml',id=>'2170');
+		wgeneral('neowebscript/test,neowebscript/tests','mailtest.nhtml',id=>'2172');
+		wgeneral('cgi-bin','cgi-test.exe',id=>'2173',bid=>'802');
+	}
+
+	wgeneral('/,@cgibin,@spider','htaccess',id=>'490');
+	wgeneral('/,@cgibin,@spider','.htaccess',id=>'492');
+	if(wserver('netscape')){
+		wgeneral('/,@cgibin,@spider','.nsconfig',id=>'493');
+	}
+	if(wserver('cern')){
+		wgeneral('/,@cgibin,@spider','.wwacl',id=>'495');
+	}
+	wgeneral('/,@cgibin,@spider','WS_FTP.ini',id=>'497');
+
+	wgeneral('/','HyperStat/stat_what.log',id=>'3000');
+	wgeneral('/','easylog/easylog.html',id=>'3001');
+	wgeneral('/','hitmatic/analyse.cgi',id=>'3002');
+	wgeneral('/','logs/access_log',id=>'3003');
+	wgeneral('/','ministats/admin.cgi',id=>'3004');
+	wgeneral('/','scripts/weblog',id=>'3005');
+	wgeneral('/','webaccess/access-options.txt',id=>'3006');
+	wgeneral('/','access-log',id=>'3008');
+	wgeneral('/','access.log',id=>'3009');
+	wgeneral('/','awebvisit.stat',id=>'3010');
+	wgeneral('/','dan_o.dat',id=>'3011');
+	wgeneral('/','hits.txt',id=>'3012');
+	wgeneral('/','log.[htm,html,txt]',id=>'3013');
+	wgeneral('/','logfile.[htm,html,txt]',id=>'3014');
+	wgeneral('/','stats.[htm,html,txt]',id=>'3015');
+	wgeneral('/','webaccess.htm',id=>'3017');
+	wgeneral('/','wwwstats.html',id=>'3018');
+	wgeneral('@cgibin,@cgibin/log','nether-log.pl?checkit',id=>'3019');
+	wgeneral('@cgibin','stats.pl',id=>'3020');
+	wgeneral('@cgibin','ax-admin.cgi',id=>'3021');
+	wgeneral('@cgibin','clickcountpl?view=test',id=>'3022');
+	wgeneral('@cgibin','cstat.pl',id=>'3023');
+	wgeneral('@cgibin','ex-logger.pl',id=>'3025');
+	wgeneral('@cgibin','hitview.cgi',id=>'3026');
+	wgeneral('@cgibin','log-reader.cgi',id=>'3027');
+	wgeneral('@cgibin','logit.cgi',id=>'3028');
+	wgeneral('@cgibin','logs.pl',id=>'3029');
+	wgeneral('@cgibin','lookwho.cgi',id=>'3030');
+	wgeneral('@cgibin','mini_logger.cgi',id=>'3031');
+	wgeneral('@cgibin','ratlog.cgi',id=>'3033');
+	wgeneral('@cgibin','robadmin.cgi',id=>'3034');
+	wgeneral('@cgibin','show.pl',id=>'3035');
+	wgeneral('@cgibin','stats-bin-p/reports/index.html',id=>'3036');
+	wgeneral('@cgibin','stats.pl',id=>'3037');
+	wgeneral('@cgibin','statview.pl',id=>'3038');
+	wgeneral('@cgibin','viewlogs.pl',id=>'3039');
+	wgeneral('@cgibin','viewlog.pl',id=>'3041');
+	wgeneral('@cgibin','wwwstats.pl',id=>'3042');
+	wgeneral('@cgibin','stats_old/',id=>'3044');
+
+	wgeneral('/','admin.cgi',id=>4000);
+	wgeneral('/','server-info',id=>4001);
+	wgeneral('/','server-status',id=>4002);
+	wgeneral('@cgibin','main_menu.pl',id=>4003);
+	wgeneral('/','/content/base/build/explorer/none.php',id=>4004);
+	wgeneral('/examples/jsp','source.jsp',id=>4005);
+	wgeneral('/interscan','/',id=>4006);
+	wgeneral('/servlet','/',id=>4007);
+	wgeneral('/servlets','/',id=>4008);
+	wgeneral('/soap/servlet','soaprouter',id=>4009);
+	wgeneral('/test/jsp','/',id=>4010);
+	wgeneral('/','applist.asp',id=>4011);
+	wgeneral('/','boilerplate.asp',id=>4012);
+	wgeneral('/Survey/','Survey.Htm',id=>4013);
+	wgeneral('/','.bashrc',id=>4014);
+	wgeneral('/','.history',id=>4015);
+	wgeneral('/','.bash_history',id=>4016);
+	wgeneral('/','.plan',id=>4017);
+	wgeneral('/','.ssh',id=>4018);
+	wgeneral('@cgibin','ban.[bak,dat,log]',id=>4019);
+	wgeneral('@cgibin,basilix','basilix[@PHP]',id=>4020);
+	wgeneral('@cgibin','bb_smilies[@PHP]',id=>4021);
+	wgeneral('/','c32web.exe',id=>4022);
+	wgeneral('/','download[@PHP]',id=>4023);
+	wgeneral('/','ezhttpbench[@PHP]',id=>4024);
+	wgeneral('/','global.inc',id=>4025);
+	wgeneral('/','globals.jsa',id=>4026);
+	wgeneral('/','gwweb.exe',id=>4027);
+	wgeneral('/','home[@PHP]',id=>4028);
+	wgeneral('/isqlplus','/',id=>4029);
+	wgeneral('/jamdb','/',id=>4030);
+	wgeneral('/java-sys','/',id=>4031);
+	wgeneral('/javax','/',id=>4032);
+	wgeneral('/','launch.asp',id=>4033);
+	wgeneral('/','midicart.mdb',id=>4034);
+	wgeneral('/','ncl_items.shtml',id=>4035);
+	wgeneral('/','phpinfo[@PHP]',id=>4036);
+	wgeneral('/','profile[@PHP]',id=>4037);
+	wgeneral('@cgibin','quikstore[cgi,cfg]',id=>4038);
+	wgeneral('/','shopa_sessionlist.asp',id=>4039);
+	wgeneral('/','shopadmin.asp',id=>4040);
+	wgeneral('/','shopping300.mdb',id=>4041);
+	wgeneral('/','shopping400.mdb',id=>4042);
+	wgeneral('/','smssend[@PHP]',id=>4043);
+	wgeneral('/achievo','/',id=>4044);
+	wgeneral('/accounts','getuserdesc.asp',id=>4045);
+	wgeneral('/admin','browse.asp',id=>4046);
+	wgeneral('/admin','cplogfile.log',id=>4047);
+	wgeneral('/admin','admin_phpinfo[@PHP]',id=>4048);
+	wgeneral('/aktivate','/',id=>4049);
+	wgeneral('/anthill','login.php',id=>4050);
+	wgeneral('/b2-include','b2edit.showposts.php',id=>4051);
+	wgeneral('/base/webmail','readmsg[@PHP]',id=>4052);
+	wgeneral('/cbms/','editclient[@PHP]',id=>4053);
+	wgeneral('/ccbill/secure','ccbill.log',id=>4054);
+	wgeneral('/cgi-bin-sdb','printenv',id=>4055);
+	wgeneral('@cgibin','handler/netsonar',id=>4056);
+	wgeneral('/cgi-shop','view_item',id=>4057);
+	wgeneral('/cgi-sys','mchat.cgi',id=>4058);
+	wgeneral('/cgi','cgiproc',id=>4059);
+	wgeneral('/downloads','pafiledb.php',id=>4060);
+	wgeneral('/ews,/ews/ews','architext_query.pl',id=>4061);
+	wgeneral('/fcgi-bin','echo.exe',id=>4062);
+	wgeneral('/instantwebmail','message[@PHP]',id=>4063);
+	wgeneral('/interscan/cgi-bin','FtpSave.dll',id=>4064);
+	wgeneral('/level','42/exec',id=>4065);
+	wgeneral('/mailman/','admin/ml-name',id=>4066);
+	wgeneral('/mcartfree/database,/metacart/database','metacart.mdb',id=>4067);
+	wgeneral('/midicart','midicart.mdb',id=>4068);
+	wgeneral('/ministats','admin.cgi',id=>4069);
+	wgeneral('/oekaki','',id=>4070);
+	wgeneral('/pages','htmlos/',id=>4071);
+	wgeneral('/pccsmysqladm/incs/','dbconnect.inc',id=>4072);
+	wgeneral('/PDG_Cart/','/',id=>4073);
+	wgeneral('/perl/','/',id=>4074);
+	wgeneral('/phorum/admin','stats[@PHP]',id=>4075);
+	wgeneral('/phpBB','phpinfo[@PHP]',id=>4076);
+	wgeneral('/phpEventCalendar','file_upload[@PHP]',id=>4077);
+	wgeneral('/phpshare/','phpshare[@PHP]',id=>4078);
+	wgeneral('/project','index[@PHP]',id=>4079);
+	wgeneral('/stoponline/fpdb','shop.mdb',id=>4080);
+	wgeneral('/ssdefs','siteseed.dtd',id=>4081);
+	wgeneral('/WebMathematica','MSP',id=>4082);
+	wgeneral('/webtools/bonsai','cvslog.cgi',id=>4083);
+	wgeneral('/wikihome/action','conflict.php',id=>4084);
+	wgeneral('/xsql/demo/adhocsql','query.xsql',id=>4085);
+	wgeneral('@cgibin','sawmill[,5]',id=>4086);
+	wgeneral('@cgibin viewcvs.cgi','',id=>4087);
+	wgeneral('@cgibin','mt-static/mt-check.cgi',id=>4088);
+	wgeneral('@cgibin','rightfax/fuwww.dll',id=>4089);
+	wgeneral('@cgibin','14all.cgi',id=>4090);
+	wgeneral('@cgibin','awl/auctionweaver[@PERL]',id=>4091);
+	wgeneral('@cgibin','auktion.cgi',id=>4092);
+	wgeneral('@cgibin','bannereditor[@PERL]',id=>4093);
+	wgeneral('@cgibin','boozt/admin/index.cgi',id=>4094);
+	wgeneral('@cgibin','cal_make[@PERL]',id=>4095);
+	wgeneral('@cgibin','commerce[@PERL]',id=>4096);
+	wgeneral('@cgibin','diagnose.cgi',id=>4097);
+	wgeneral('@cgibin','FileSeek[@PERL]',id=>4098);
+	wgeneral('@cgibin','generate[@PERL]',id=>4099);
+	wgeneral('@cgibin','hsx[@PERL]',id=>4100);
+	wgeneral('@cgibin','journal[@PERL]',id=>4101);
+	wgeneral('@cgibin','mgrqcgi',id=>4102);
+	wgeneral('@cgibin','mmstdod[@PERL]',id=>4103);
+	wgeneral('@cgibin','mkplog.exe',id=>4104);
+	wgeneral('@cgibin','mrtg[@PERL]',id=>4105);
+	wgeneral('@cgibin','nph-emumail.cgi',id=>4106);
+	wgeneral('@cgibin','opendir[@PHP]',id=>4107);
+	wgeneral('@cgibin','ntitar[@PERL]',id=>4108);
+	wgeneral('@cgibin','pagelog[@PERL]',id=>4109);
+	wgeneral('@cgibin','postcargs[@PERL]',id=>4110);
+	wgeneral('@cgibin','shopper[@PERL]',id=>4111);
+	wgeneral('@cgibin','shopplus[@PERL]',id=>4112);
+	wgeneral('@cgibin','sojourn[@PERL]',id=>4113);
+	wgeneral('@cgibin','ss',id=>4114);
+	wgeneral('@cgibin','sscd_suncourier.pl',id=>4115);
+
+	if(wserver('domino')){
+		wgeneral('/','database.nsf',id=>'1075');
+		wgeneral('/','domcfg.nsf',id=>'1076');
+		wgeneral('/','log.nsf',id=>'1077');
+		wgeneral('/','domlog.nsf',id=>'1078');
+		wgeneral('/','names.nsf',id=>'1080');
+		wgeneral('/','catalog.nsf',id=>'1081');
+	}
+
+}
+
+##########################################################################
+
+sub m_netware_test {
+	if(wserver('novell')){
+		wgeneral('perl,perl5','files.pl',id=>'1025');
+		wgeneral('scripts','convert.bas',id=>'1028');
+	}
+	if(wserver('netware')){
+		wgeneral('perl,perl5','files.pl',id=>'1026');
+		wgeneral('scripts','convert.bas',id=>'1027');
+		wgeneral('cgi-bin','GW5/GWWEB.EXE',id=>'1029');
+	}
+}
+
+##########################################################################
+
+sub m_dir_test{
+ if(wtest(101)){
+  my @dirs=qw(
+	temp	prv	source	backup
+	bak	old	db	lib
+	inc	include	dat	data
+	test	save	tmp	archive
+        counter app     marketing       exe
+        DMR     www     register        webboard
+        passwords       home    ibill   sell
+        tools   jdbc    idea    files
+        apps    site    search
+        sales   WebShop login
+        guests  beta    ccard   web
+        file    retail  root    buynow
+        htdocs  software        account registered
+        sql     setup   website
+        perl    guestbook       updates	conf
+        config  install shop    import
+        private manual  fpadmin test-cgi
+        administrator   www-sql PDG_Cart        intranet
+        webadmin        empoyees        docs
+        cart    ftp     accounting      downloads
+        info    purchases       tree
+        pages   users   access  StoreDB
+        wwwjoin usage   library database
+        html    doc-html        down
+        download        bin     
+        Admin_files     credit  reseller        public
+        dbase   shopper priv
+        java    mail    c
+        asp     customers       zipfiles        ideas
+        jave    pw      pub     admin
+        forum   new     Web_store       outgoing
+        orders  buy     adm
+        incoming        oracle  odbc    atc
+        mall_log_files  purchase        WebTrend        order
+        support msql    user	demo
+  );
+
+  warray('dir_test',@dirs); # add items
+
+  if(wexist('@dir_test','/')){
+	my $text=<<EOT;
+Whisker scans for a list of 'notable' directories--that is, directories
+which may contain interesting information and/or CGIs.  The finding of a
+directory does not immediately signal a problem; rather, you should go
+back and review the contents of each found URL to determine if there is
+any sensitive material in those directories.
+EOT
+	wlog(id=>101,title=>'Notable directories found',text=>$text,
+		severity=>'Informational');
+  }
+}}
+
+##########################################################################
+
+sub m_dir_driller{
+ my @temp=warray('spider');
+ my @general=qw(
+	temp	prv	source	backup
+	bak	old	db	lib
+	inc	include	dat	data
+	test	save	tmp	archive
+ );
+ if(wtest(110) && scalar @temp){
+  warray('dir_driller',@general); # add items
+
+  if(wexist('@spider/@dir_driller','/')){
+	my $text=<<EOT;
+Whisker scans for common subdirectories in already-existing directories
+found while spidering the website. The finding of a directory does not 
+immediately signal a problem; rather, you should go back and review the 
+contents of each found URL to determine if there is any sensitive material
+in those directories.
+EOT
+	wlog(id=>110,title=>'Notable directories found',text=>$text,
+		severity=>'Informational');
+  }
+}}
+
+##########################################################################
+
+1;

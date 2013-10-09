@@ -1,0 +1,219 @@
+# whisker 2.x newbie helper script (as close to a GUI as you're going to get)
+# version 1.0
+#############################################################################
+
+package newbie;
+
+my %NEWBIE=();
+my $temp;
+
+print STDOUT <<EOT;
+
+
+-----------------------------------------------------------------------
+
+Welcome to whisker's newbie helper application.  This interactive guide
+will walk you through setting the appropriate command line options for
+whisker.
+
+First off, whisker needs to know what website you want to scan.  Enter
+the full URL of the target website below.  Be sure to start with 
+'https://' if you want to scan the site over SSL, or 'http://' to scan
+the normal site.
+
+Examples:
+	http://www.example.com/		# scan www.example.com
+	http://www.example.com:8080/	# scan www.example.com port 8080
+	https://www.example.com/	# scan www.example.com using SSL
+
+EOT
+
+do{
+	$temp=getinfo('website');
+	if($temp!~m#^http[s]{0,1}://#){
+		print STDOUT "Error: the host needs to begin with 'http://' or 'https://'\n";}
+}while($temp!~m#^http[s]{0,1}://#);
+
+$NEWBIE{host}=$temp;
+
+print STDOUT <<EOT;
+
+Do you need to use a proxy to access the target website?  If you're not
+sure, try saying 'n'.  You can also check out the proxy settings of your
+web browser--if your web browser uses a proxy, then you should say 'y'.
+
+EOT
+$temp=&yesno;
+
+if($temp eq 'y'){
+	print STDOUT "\nFirst, enter in the address (DNS or IP) of your proxy.\n";
+	$NEWBIE{proxy}=getinfo('proxy host address');
+	$NEWBIE{proxy}.=':';
+	print STDOUT "\nNow, enter in the port of the proxy service on that host.\n";
+	$NEWBIE{proxy}.=getinfo('proxy host port');
+
+	print STDOUT "\nDo you need to enter a username and password to use the proxy?\n";
+	print STDOUT "Note: whisker only supports 'basic' proxy authentication.  If\n";
+	print STDOUT "your proxy uses NTLM authentication, whisker will not be able to\n";
+	print STDOUT "scan your site.  If you need authentication, just say 'y' and\n";
+	print STDOUT "whisker will let you know later if the auth type is incompatible.\n";
+	$temp=&yesno;
+	if($temp eq 'y'){
+		$temp=getinfo('username');
+		my $temp2=getinfo('password');		
+		$NEWBIE{proxyauth}="basic:$temp:$temp2";
+	}
+}
+
+print STDOUT <<EOT;
+
+Would you like to skip crawling the website?  Normally whisker will
+crawl, or spider, the website looking to see what web pages the site
+normally uses.  However, for big sites this may take a little bit of
+time.  Note that if you do not crawl the website, whisker will not
+be able to run all the tests.
+
+Would you like to skip crawling the website?  When in doubt, say 'n'.
+EOT
+
+$temp=&yesno;
+$NEWBIE{skipcrawl}++ if($temp eq 'y');
+
+print STDOUT <<EOT;
+
+Normally whisker does not do anything special with cookies that it
+runs across.  However, on some sites the user has to accept and
+return cookies for the site to function correctly.  If you would
+like whisker to track and handle cookies just like a normal
+webbrowser would, then say 'y' below.
+
+When in doubt, say 'y'.
+EOT
+
+$temp=&yesno;
+$NEWBIE{trackcookies}++ if($temp eq 'y');
+
+print STDOUT <<EOT;
+
+Whisker has the option of including extra data and information in
+the report, which may be helpful in understanding how the website
+operates but has nothing to do with any specific vulnerabilities.
+The extra information includes a list of all found cookies, all
+the move (3xx), authentication (401) and failure (500) responses,
+and all encountered HTML forms.
+
+Include the extra information in the report?
+EOT
+
+$temp=&yesno;
+$NEWBIE{reportall}++ if($temp eq 'y');
+
+print STDOUT <<EOT;
+
+Would you like whisker to save the results to a file?
+
+Note: you will be able to see the results regardless of saving
+to a file.
+
+EOT
+
+$temp=&yesno;
+if($temp eq 'y'){
+	$temp=getinfo('filename to save results to');
+	$NEWBIE{logfile}=$temp;
+}
+
+
+print STDOUT <<EOT;
+
+------------------------------------------------------------------
+
+OK, now it's time to verify the information you entered.
+
+EOT
+
+print STDOUT sprintf("%20s: %s\n",'Host',$NEWBIE{host});
+
+if(defined $NEWBIE{proxy}){
+	print STDOUT sprintf("%20s: %s\n",'Proxy',$NEWBIE{proxy});
+	if(defined $NEWBIE{proxyauth}){
+		print STDOUT sprintf("%20s: %s\n",'Proxy auth',$NEWBIE{proxyauth});
+}}
+
+print STDOUT sprintf("%20s: %s\n",'Skip crawling',
+	(defined $NEWBIE{skipcrawl})	?'yes':'no');
+print STDOUT sprintf("%20s: %s\n",'Track cookies',
+	(defined $NEWBIE{trackcookies})	?'yes':'no');
+print STDOUT sprintf("%20s: %s\n",'Report everything',
+	(defined $NEWBIE{reportall})	?'yes':'no');
+
+if(defined $NEWBIE{logfile}){
+	print STDOUT sprintf("%20s: %s\n",'Log to file',$NEWBIE{logfile});
+}
+
+print STDOUT "\n\nDoes everything look correct?\n";
+$temp=&yesno;
+
+if($temp eq 'n'){
+	print STDOUT <<EOT;
+You picked 'n', which means something is incorrect.  In order to
+change an option, you will need to restart from the beginning.
+Whisker will now exit.
+EOT
+	exit;
+}
+
+$whisker::G_O{h}=$NEWBIE{host};
+$whisker::G_O{P}=$NEWBIE{proxy} if(defined $NEWBIE{proxy});
+$whisker::G_O{A}=$NEWBIE{proxyauth} if(defined $NEWBIE{proxyauth});
+$whisker::G_O{l}=$NEWBIE{logfile} if(defined $NEWBIE{logfile});
+$whisker::G_O{c}.='d' if(defined $NEWBIE{skipcrawl});
+$whisker::G_O{T}.='c' if(defined $NEWBIE{trackcookies});
+$whisker::G_O{T}.='A' if(defined $NEWBIE{reportall});
+
+
+my $optstr='';
+my ($k,$v);
+
+while(($k,$v)=each %whisker::G_O){
+	$v="'$v'" if($v=~tr/ \t//);
+	$optstr.="-$k $v ";
+}
+
+print STDOUT <<EOT;
+
+In the future you can rerun the exact same scan by using the
+following command line parameters:
+
+perl whisker.pl $optstr
+
+Whisker will now run the scan.
+
+EOT
+
+
+###############################################################################
+
+sub getinfo {
+	my $prompt = shift;
+	my $x='';
+	do {
+		print STDOUT "Enter $prompt: ";
+		$x=<STDIN>;
+		$x=~tr/\r\n//d;
+	} while ($x eq '');
+	return $x;
+}
+
+sub yesno {
+	my $x='';
+	do {
+		print STDOUT "Choice [y/n]: ";
+		$x=<STDIN>;
+		$x=~tr/YyNn//cd;
+	} while ($x eq '');
+	return lc($x);
+}
+
+1;
+

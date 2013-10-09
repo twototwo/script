@@ -1,0 +1,3 @@
+Since plugins and tests share many common programming
+characteristics, all information concerning making new
+tests is included in the plugins.txt document.

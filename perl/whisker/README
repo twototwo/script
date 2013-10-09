@@ -1,0 +1,277 @@
+-------------------------------------------------------------------
+                       Whisker release v2.1
+-------------------------------------------------------------------
+
+What is whisker?
+
+The primary purpose of whisker is to be a URL scanner, which is 
+used to search for known vulnerable CGIs on websites.  Whisker does 
+this by both scanning the the CGIs directly as well as crawling the 
+website in order to determine what CGIs are already currently in
+use.
+
+All whisker/libwhisker updates and related information is available
+at the following URL:
+
+http://www.wiretrip.net/rfp/p/doc.asp/d21.htm
+
+-------------------------------------------------------------------
+  README README README README README README README README README
+-------------------------------------------------------------------
+
+Quick usage instructions for the impatient:
+
+
+** How to install whisker **
+
+	perl install.pl
+
+Note: you do not need to install whisker in order to use it
+
+
+
+** How to run whisker **
+
+Windows users:
+	whisker -h http://www.target-site-to-scan.com/
+
+Unix users:
+	/usr/local/bin/whisker -h http://www.target-site-to-scan.com/
+
+
+
+** How to interpret the results of whisker **
+
+	http://www.google.com/search?q=<name-of-found-cgi>
+
+Example:
+	http://www.google.com/search?q=msadc.dll
+
+
+-------------------------------------------------------------------
+TABLE OF CONTENTS:
+-------------------------------------------------------------------
+
+	1. Whisker architecture
+	2. Whisker command line usage summary
+	3. Further information	
+
+
+-------------------------------------------------------------------
+1. WHISKER ARCHITECTURE
+-------------------------------------------------------------------
+
+Originally whisker 1.x was a single whisker.pl script, and a handful
+of test .db files (which used a 'whisker meta-language' to describe
+how to conduct CGI scans).
+
+The problem with the whisker 1.x architecture is that it was 
+strictly limited to pure CGI scanning only.  The test meta-language
+was quite limited and did not offer even fundamental programming
+constructs.
+
+For whisker 2.x the flimsy whisker meta-language was thrown away
+and replaced with Perl.  This means tests can do anything Perl can
+do, which is pretty much everything (although there are glass
+ceilings...).  This lets the tests evolve beyond just simple CGI
+scanning and into a more web-assessment arena.
+
+Whisker 2.x itself is just an engine which loads and runs the 
+plugins and tests, and provides support functions in order to make
+test writing easier.  The engine itself is generic enough to be
+also act as a platform for basic web server assessments.
+
+The core of whisker 2.x is implemented in the libwhisker library, 
+which contains the bulk of the utility logic powering whisker.  
+This standard library lets tests use and share the same powerful 
+functions that the whisker engine uses.  It also allows 
+cross-platform rapid web test tool development, but that sales
+pitch is better left to a different forum.
+
+Whisker 2.x also now supports a modular architecture which lets perl
+scripts, in the form of tests and plugins, be integrated into the
+whisker engine and have access to all scan data.  Test scripts 
+interact with a server, and plugins provide new functionality to the
+test scripts.
+
+Whisker 2.x now uses a central directory to store all whisker tests,
+plugins, and data files.  This directory is specified when you run
+the install.pl script.  However, whisker will also run just fine by
+using the tests and plugins found in the current directory as well--
+you don't have to install it.
+
+
+
+-------------------------------------------------------------------
+2. WHISKER COMMAND LINE USAGE SUMMARY
+-------------------------------------------------------------------
+
+The following list may not be complete, and other options may become
+available depending on what plugins are installed.  Below is the
+list of basic options supported by the core whisker engine.
+
+ -h <arg>  Host to scan (www.host.com or http[s]://www.host.com:80/)
+
+ -a <arg>  HTTP authorization (in the form of [type:]user:pass)	
+		You can specify a username and password needed to
+		access the webserver. Type can be 'basic' or 'ntlm'.
+		Examples:
+			-a ntlm:username:mypassword
+			-a basic:username:mypassword
+			-a username:mypassword      (basic is assumed)
+
+ -P <arg>  Use HTTP proxy (in the form of proxy_host:port)
+
+ -A <arg>  Proxy HTTP authorization (in the form of [type:]user:pass)	
+		Lets you specify a username and password passed to the
+		proxy.  Only 'basic' type supported.  See -a examples.
+
+ -t <arg>  Specify the timeout, in seconds (default: 10)
+		This is the per-request timeout.
+
+ -I <arg>  Enable the given IDS-evasive modes (see docs for mode codes)
+
+ -S <arg>  Override the Server banner
+		Use the given server banner for server banner tests.
+		Examples:
+			-S 'apache'	(make tests think this is an
+					 apache server)
+
+ -G        Generic/dumb mode; force all scans in all dirs on all servers
+
+ -r <arg>  Run only the given tests (in the form of id:id:id:...)
+		This can be used to run only specific tests.
+		Examples:
+			-r 101:102   (run tests 101 and 102 only)
+
+		You can use the '-T r' parameter to invert this, so that
+		the indicated tests are *not* ran.  In the above example,
+		tests 101 and 102 would be skipped.
+
+ -l <arg>  Log output to specified file
+		Output will be printed to the file specified.  Note that
+		output will also still show up on STDOUT.
+
+ -q        Do not print results to STDOUT
+		Really only useful if you're logging via the -l argument
+		and don't want results printed to the console.  Note
+		that interactive questions and some information will
+		still show up, as well as debugging output.
+
+ -d <arg>  Depth to crawl (default: 2; main homepage counts as 1)
+		How many pages deep to crawl the website.  The value '1'
+		will only crawl the homepage, '2' will crawl each page
+		linked off the homepage, etc.
+
+ -c <arg>  Crawl options:
+           d  Do not crawl site
+		Since crawling large sites can take a long time, you can
+		skip that portion.  However, this may dramatically affect
+		tests, as crawling is an important part of whisker.  A
+		better choice is to just crawl to a depth of 1.
+
+           p  Take URL parameters into account when crawling
+		Normally the crawler treats 'page.asp?q=1' and
+		'page.asp?q=2' the same (as 'page.asp'); however, in
+		various situations you may want to treat them as
+		unique, in which case you should specify this option.
+
+           h  Use HEAD requests for potential speed increase
+		In order to keep from downloading large non-HTML files
+		(and thus taking more time to crawl the site), you can
+		have the crawler use HEAD requests first to determine
+		if the page is HTML, and then download it.  This is
+		generally a recommended option, except some servers do
+		not support the HEAD method.
+
+           l  Raise the URL buffer limit from 1,000 to 10,000
+		The crawler keeps an internal URL queue of pages that
+		still need to be crawled.  On very extensive sites it's
+		possible to encounter many links.  Normally the crawler
+		sets to the queue limit to 1,000, but for large sites
+		you may want to raise that to 10,000.
+
+           a  Do not populate SPIDER directory array
+		By default whisker put all directories found while
+		crawling into a whisker directory array named
+		'spider', so that tests can easily run scans in
+		the directories found.  By specifying this option
+		you will prevent whisker from populating this array.
+
+           c  Add form target directories to CGIBIN directory array
+		9 times out of 10, the target/action of an HTML form
+		is some kind of dynamic application, which makes it
+		a CGI in a generic sense.  Since admins tend to cluster
+		CGIs into the same common directories, it may be
+		advantageous to flag the directories containing form
+		processing scripts for scanning of other CGIs.
+
+           e  Do not add .asp or .php form targets to CGIBIN dir array
+		This only affects the 'c' crawl option, above.  Since
+		ASP and PHP pages can be scattered anywhere and do not
+		necessarily indicate the presence of other CGIs, you
+		can exclude them from being added to the CGIBIN array.
+
+
+ -T <args> Tweak options:
+           c  Track and handle cookies like a normal client would
+		Record and resend cookies like a normal web browser
+
+           p  Include phtml in generic PHP extensions
+		When looking for PHP scripts, also look for .phtml in
+		addition to the normal .php and .php3
+
+           l  Double scan all mixed-case URLs as lowercase
+		If a URL contains upper-case characters, you can have
+		whisker automatically rescan with lower-case 
+		characters; only matters on case-sensitive servers
+
+           d  Suppress CGI disclaimer in output report
+
+           i  Suppress all interactive questions
+
+           r  Invert the -r parameter (as in, do *not* run those tests)
+
+           R  Turn off libwhisker 'retries' feature
+		In order to be a bit more resilient, libwhisker will
+		attempt to redo requests which resulted in a protocol
+		error.  Specify this option to keep libwhisker from
+		attempting to recover from an error.
+
+           0  Use HTTP/1.0 (that is a zero, and not the letter 'o')
+		The libwhisker library uses HTTP/1.1 by default.  This
+		option lets you specify HTTP/1.0 as the default.
+
+           3  Report all move (3xx) responses
+           4  Report all authentication (401) responses
+           5  Report all failure (500) responses
+           f  Report all form targets
+           C  Report all cookies given during scanning
+           A  Report everything
+
+           D  Print debug output to STDERR
+
+           T  Dump TRACK hash to track.log in current dir when done
+		The TRACK hash contains all URLs found while 
+		crawling and scanned during tests.  This lets you
+		dump that information to a file.  It is dumped as
+		Perl hash script code, which can be require()'d by
+		other scripts and used.
+
+
+
+-------------------------------------------------------------------
+3. FURTHER INFORMATION
+-------------------------------------------------------------------
+
+Reference documentation for plugin and test writing is found in the
+docs/ subdirectory of the distrubtion tarball.  You can also review
+the default .test files as examples of how to implement various
+testing functionality, which can range from a simple CGI to a
+complex multi-request server response analysis.
+
+To really take advantage of the whisker engine, you should be
+familiar with libwhisker.  All libwhisker functions are available
+to all whisker scripts and plugins, and should be used accordingly.
+
+-------------------------------------------------------------------

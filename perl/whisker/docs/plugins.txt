@@ -1,0 +1,741 @@
+Whisker 2.x guide to writing whisker plugins and tests
+Version 1.0
+-----------------------------------------------------------
+
+Table of contents:
+
+	SECTION 1. Introduction
+	SECTION 2. Global data structures
+	SECTION 3. Hooks
+	SECTION 4. whisker test functions
+	SECTION 5. Test/plugin writing guidelines
+
+
+-----------------------------------------------------------
+SECTION 1.  INTRODUCTION
+-----------------------------------------------------------
+
+This file documents the various aspects and resources provided
+in order to code whisker 2.x plugins and tests.  If you're not
+interested in modifying or extending the functionality of
+whisker, then you can stop reading right now.
+
+
+
+
+
+
+-----------------------------------------------------------
+SECTION 2.  GLOBAL DATA STRUCTURES
+-----------------------------------------------------------
+
+Starting with whisker 2.1 (2.0 was considered beta, and thus will
+not be discussed), there are four notable global data strucures
+which control whisker:
+
+-----------
+%G_REQ
+-----------
+
+The %G_REQ hash is the global request hash.  Basically this serves
+as a 'prototype' for all requests, as it has all the appropriate
+configuration values all ready defined.
+
+Tests and plugins can use %G_REQ in a read-only fashion, but they
+SHOULD NOT MODIFY IT, as any modifications will then be given to
+all future requests as well.  If you need to change something for
+your test, make a copy of it and use the copy.
+
+
+-----------
+%G_CONFIG
+-----------
+
+%G_CONFIG contains all the global configuration values used by
+whisker.  All values in %G_CONFIG apply to all target hosts
+scanned.
+
+%{$G_CONFIG{ARRAY}} contains the default script array values.
+Upon calling wtarget() (which registers a new target), all
+the $G_CONFIG{ARRAY} values are copied to $G_HOST{ARRAY}, and
+then all test uses of the array functions use the G_HOST set.
+
+
+-----------
+%G_HOST
+-----------
+
+%G_HOST contains all the information relevant to the currently-
+targeted host.  This hash is re-initialized when a new target
+host is selected, and all result information should be stored
+in this hash.  This hash also has significant elements:
+
+%{$G_HOST{IDS}} tracks what tests have been executed by their
+test ID.
+
+@{$G_HOST{FOUND}} contains all the URLs found in the last query
+permutation.
+
+%{$G_HOST{RECORD}} is used to record/save various data values
+
+%{$G_HOST{ARRAY}} is the usable set of array information, which
+is used during tests.  This is initially populated with the values
+found in %{$G_CONFIG{ARRAY}}.
+
+%{$G_HOST{TRACK}} is the URL tracking hash, indicating what URLs
+have been scanned, and what their resulting HTTP code was.
+
+
+-----------
+%G_HOOKS
+-----------
+
+The global %G_HOOKS hash lets you register new functions which
+change or enhance whisker functionality.  This is also how you
+inform whisker about new tests to run, etc.  See the next
+section for details.
+
+
+
+
+
+
+-----------------------------------------------------------
+SECTION 3.  HOOKS
+-----------------------------------------------------------
+
+The Whisker 2.x series has the capability of supporting external 
+perl script plugins (or non-perl apps with a perl script wrapper).
+
+Basically, it's possible to override or enhance certain whisker
+functions by registering a pointer to your function in the
+whisker %G_HOOKS global hook hash.
+
+There are three kinds of hooks:
+
+	'override hooks'	replace an internal function
+	'process hooks'		add to an internal function
+	'test hooks'		are used to register tests functions
+
+Test hooks are an array of multiple functions to call; override and
+process hooks are only a direct function pointer.  In order to have
+multiple override/process hooks, hooks must 'chain' together.  So
+when registering an override/process hook, first check to see if
+there is already a hook for that function--if so, then save the
+currently defined hook value, register a pointer to your own function,
+and then ensure that your function calls the saved hook value at the
+end of it's processing.  This creates a virtual 'linked list' of
+execution flow, if you will.
+
+The current (whisker 2.1) list of hook names (and their type):
+
+	OPTIONS			test
+	INIT			test
+	START			test
+	TESTS			test
+	ANALYSIS		test
+	FINISH			test
+	EXIT			test
+	wlog			override
+	wdisplay		override
+	wexist			override
+	code_page		override
+	d_cookie		process
+	d_response		process
+	d_crawl_scallback	process
+
+Below is a detailed explanation of each hook.
+
+---------------
+OPTIONS hook queue
+---------------
+
+The OPTIONS hook queue is called in order to allow tests and plugins to
+parse commandline options given to whisker.  A test/plugin can register
+new options by modifying the $G_CONFIG{options} value, using standard
+'getopts' style option strings.  The plugin should also add a line
+to $G_CONFIG{usage} which tells the user what the option does.
+
+In order to not run out of command line option switches (especially
+for small stuff), whisker also has a subset of options called 'tweaks'.
+Tweaks are simple yes/no values passed in as one big parameter to the
+-T command line option.  If you want to register a tweak, you do not
+have to modify $G_CONFIG{options} since the '-T' switch is already
+scanned for.  Instead just update the $G_CONFIG{tweaks_usage} variable
+to describe your tweak, and test the T option to see if your tweak
+character is included.
+
+You should register your $G_CONFIG values immediately upon plugin 
+loading.  Then, once whisker has loaded all the plugins and parsed the
+command line parameters, the function registered on the OPTIONS hook
+queue will be called with a reference to the parsed options hash.
+
+Example:
+
+	# redirect the -Z option (with argument) to our plugin
+	$G_CONFIG{options}.="Z:";
+	$G_CONFIG{usage}.=" -Z <arg>  Passes a value to the example plugin\n";
+
+	# handle the 'Z' tweak; extra spaces is for pretty formatting
+	$G_CONFIG{tweak_usage}.="           Z  The mighty Z tweak\n";
+
+	push @{$G_HOOKS{OPTIONS}}, \&my_Z_handler;
+
+	sub my_Z_handler {
+		my $options=shift;
+
+		# handle the -Z option
+		if(defined $options->{Z}){
+			print "The value of Z: $options->{Z}\n";
+		}
+
+		# check for the Z tweak
+		if($options->{T}=~/Z/){
+			print "Z tweak initiated!\n";
+		}
+	}
+
+
+Notes:
+	- You have to be careful of option name collision.  A good
+	plugin would double-check that their target parameter name (in
+	this case, 'Z') isn't already taken.
+
+	- Option values are case-sensitive.
+
+	- When possible, you should combine all your options into one
+	option handler
+
+	- Unlike the other hook queues, the OPTIONS hook is called only
+	once.
+
+
+---------------
+INIT hook queue
+---------------
+
+The INIT hook queue lists functions which are called right after all
+options are parsed, and right before scanning starts.
+
+
+
+---------------
+START hook queue
+---------------
+
+The START hook queue lists functions which are called when a new target is
+specified.  This lets the plugins/tests initialize data/structures on
+a per-host (aka per-target) basis.
+
+	push @{$G_HOOKS{START}}, \&my_start;
+
+	sub my_start {
+		# initialize test/plugins for the newly specified target
+	}
+
+This queue is called once for each target host.
+
+
+
+---------------
+TESTS hook queue
+---------------
+
+The TESTS queue hook is the workhorse of whisker 2.x.  All tests must 
+register onto this hook queue in order to be called.
+
+
+	push @{$G_HOOKS{TESTS}}, \&my_tests;
+
+	sub my_tests {
+		# various tests to run, including CGI scans, etc.
+	}
+
+This queue is called once for each target host.
+
+---------------
+ANALYSIS hook queue
+---------------
+
+The ANALYSIS hook queue is meant to be called after all tests are done,
+in order to 'analyze' the results.
+
+	push @{$G_HOOKS{ANALYSIS}}, \&my_analysis;
+
+	sub my_analysis {
+		# do something with the test results: process cookies,
+		# double check found URLs, etc
+	}
+
+This queue is called once for each target host.
+
+---------------
+FINISH hook queue
+---------------
+
+The FINISH hook queue is called so that tests/plugins can do any cleanup
+procedures after a host is done testing (note: this is when the *host*
+is done, and not the entire whisker scan).
+
+	push @{$G_HOOKS{FINISH}}, \&my_cleanup;
+
+	sub my_cleanup {
+		# remove temporary files, etc
+	}
+
+This queue is called once for each target host.
+
+
+---------------
+EXIT hook queue
+---------------
+
+The EXIT hook queue is called when the whisker program is exiting.
+
+
+---------------
+wlog hook
+---------------
+
+Specifies a function to call instead of the internal wlog function.
+Wlog is responsible for logging the result of a test.  Parameters are
+passed in hash-fashion, and the target URLs are contained in
+@{$G_HOST{FOUND}}.
+
+Wlog should call wdisplay() in order to log/print the data; wlog is
+for converting test output into a presentable format for logging.
+
+See the whisker internal wlog() function for an idea of what it needs
+to do.
+
+---------------
+wdisplay hook
+---------------
+
+Wdisplay is the function responsible for printing data to the user
+or to the log.  Parameters are passed in hash-fashion.
+
+Normally various value pairs are passed to wdisplay, which is
+responsible for formatting it for printing.  Common values:
+
+	title		Title of display item
+	id		Associated ID of the display item
+	bid		Bugtraq ID(s) associated with display item
+	cve		CVE ID(s) associated with display item
+	neo		Archives.neohapsis.com URL(s)
+	severity	Severity ranking of display item
+	text		Main body text
+	reference	Reference URLs for display item
+
+Note that other values can be passed, and should be logged in
+an appropriate name:value pair fashion.  Formatting the data for
+nice output is also the responsibility of wdisplay.
+
+There is one special value wdisplay parameter value: raw.  When
+the raw parameter exists, wdisplay should just log the value of
+the raw parameter and return immediately--no parsing of additional
+parameters should be done.
+
+
+---------------
+wexist hook
+---------------
+
+wexist is an important fuction in whisker: it is the function
+responsible for taking the directory and filename lists and
+checking to see if the various permutations exist, tracking
+directory entries and testing for parent subdirectories along
+the way.
+
+Don't override unless you *really* know what you're doing.
+
+---------------
+code_page hook
+---------------
+
+The code_page function takes an HTTP code result and determines
+if the code indicates a negative or positive result.  By default
+this function returns TRUE if the HTTP code is 200, otherwise
+it returns FALSE.  You can override this function when you expect
+a URL to return a non-200 request, and still have it return
+positive.
+
+For example, let's say there's a particular CGI which returns
+a HTTP 502 error result when it exists (rather than the usual 
+200).  Your test code would look like:
+
+	# save any current hooks that might be there
+	my $saved_hook = undef;
+	$saved_hook = $G_HOOKS{code_page} if(defined $G_HOOKS{code_page});
+
+	sub my_502_result {
+		my $code=shift;
+		return 1 if($code==502);
+		return 0;
+	}
+
+
+	# install our special 502 hook
+
+	$G_HOOKS{code_page}=\&my_502_result;
+
+	if(wexist('/','special.cgi')){
+		# URL found (502 response received)
+	}
+
+	# restore old hook
+	if(defined $saved_hook){
+		$G_HOOKS{code_page}=$saved_hook;
+	} else {
+		delete $G_HOOKS{code_page};
+	}
+
+
+---------------
+d_cookie hook
+---------------
+
+The d_cookie hook is called for every cookie encountered while
+scanning.  The cookie value and responsible URI are passed as
+parameters (in that order).
+
+The d_cookie function will need to make use of the INIT and EXIT
+hooks inorder to determine what host the various cookies belong 
+to.  The typical scenario is that a plugin will register an INIT
+hook to clear out the saved cookie list, a d_cookie hook to record
+all new cookies encountered while scanning, and an ANALYSIS hook to 
+make sense of the found cookies.
+
+Example d_cookie hook:
+
+	my $saved_dcookie_hook = $G_HOOKS{d_cookie};
+
+	sub my_dcookie {
+		# DO NOT MODIFY @_!!  It needs to stay intact in
+		# order to be passed to the goto, below
+		my ($cookie, $uri)=@_;
+
+		# do something with cookie info
+
+		# call the next in the chain
+		goto &$saved_dcookie_hook;
+	}
+
+Note: if you need access to other elements in the response hash
+in order to process the cookie value, you will need to use 
+d_response.
+
+
+---------------
+d_response hook
+---------------
+
+The d_response hook is called for every response received from
+the target host.  It can be used to analyze all responses for
+various data.  A response hash reference is passed as the
+parameter.
+
+Example d_response hook:
+
+	my $saved_dresponse_hook = $G_HOOKS{d_response};
+
+	sub my_dresponse {
+		# DO NOT MODIFY @_!!  It needs to stay intact in
+		# order to be passed to the goto, below
+		my ($hr)=@_;
+
+		# do something with %$hr response hash
+
+		# call the next in the chain
+		goto &$saved_dresponse_hook;
+	}
+
+
+---------------
+d_crawl_scallback hook
+---------------
+
+The d_crawl_scallback hook is called as a crawl() source_callback
+function, allowing d_crawl_scallback to access and manipulate
+the HTTP responses before the crawl() function parses the HTML
+data.
+
+The d_crawl_scallback hook function is passed to parameters:
+a request hash reference, and a response hash reference.
+
+
+
+
+
+
+
+-----------------------------------------------------------
+SECTION 4.  WHISKER TEST FUNCTIONS
+-----------------------------------------------------------
+
+In order to make life easier for test writers, whisker has some
+internal functions which handle a lot of the general testing
+procedures.
+
+
+---------------
+wgeneral
+---------------
+Parameters:	$dir, $file, %options
+Returns:	<nothing>
+
+The wgeneral function is a basic wrapper which looks like:
+
+	if(wtest($id)){
+		wlog(%options) if(wexist($dir,$file)); }
+
+Note: the 'id' option parameter *must* be specified, or wgeneral
+will return without running a test.
+
+This function lets you keep from running specific tests more than
+once (based on the 'id' value), and logs the results in a generic
+item.
+
+This is most useful for general CGI scans, which don't require
+any more than a simple wexist() to check for them, and a wlog()
+to log them.
+
+
+
+---------------
+warray
+---------------
+Parameters:	[$name [, $value, ...]]
+Returns:	<variable>
+
+waray() is used to manipulate the whisker hashes used to
+store directory and extension names.  It has three formats,
+depending on how it is used:
+
+	@values = warray('name');
+
+Will return all the values for the given named array.  It 
+will return undef it the named array is not defined.  This
+is a read-only operation.
+
+	warray('name', 'one', 'two', 'three');
+
+Will *add* the three given values (one, two, three) to the
+array named 'name'.
+
+	warray('name');
+
+This will delete the array named 'name'.
+
+
+---------------
+wtest
+---------------
+Parameters:	$test_id
+Returns:	1 or 0
+
+Checks whether the indicated test should be ran or not,
+as configured by the various command-line options.
+
+
+---------------
+wlog
+---------------
+Parameters:	%log_data
+Returns:	<nothing>
+
+Wlog is used to log test results.  First it formats test
+result information into a more appropriate form for wdisplay.
+It also marks the particular test ID in %G_HOST{IDS}.  It
+attempts to fill in some default values as well.
+
+Example:
+
+	wlog(id=>9021, title=>'bad.cgi found', bid=>2222);
+
+
+---------------
+wdisplay
+---------------
+Parameters:	%display_data
+Returns:	<nothing>
+
+Wdisplay is used to display information to the user and logs.
+It is aware of whisker's internal log config options.
+
+There are two ways to use wdisplay: the first is to pass
+raw text under the raw parameter:
+
+	wdisplay(raw=>'This raw text will be displayed');
+
+Or else you can use the recognized item parameter values
+for a more formatted printing result:
+
+	wdisplay( 	title=>'bad.cgi was found',
+			id=>9012,
+			severity=>'high',
+			cve=>'2002-9999',
+			text=>'The bad.cgi was found.  It's bad.',
+			references=>'http://www.reference.org/'
+	);
+
+
+---------------
+wtarget
+---------------
+Parameters:	$host
+Returns:	<nothing>
+
+Initializes the various whisker data structures to test the
+indicated $host.  Whisker normally takes care of this in it's
+course of things, so you shouldn't need to use it; however, so
+various types of plugins may have cause to scan additional 
+hosts.
+
+Note: once running wtarget(), all previous target information
+is lost.
+
+
+---------------
+wexist
+---------------
+Parameters:	$dirlist, $filelist
+Returns:	1 or 0
+
+Checks to see if any of the given files exist in the specified
+directories, permutating all directory combinations.  Returns
+1 if 1 or more of the files were found, or 0 if none were 
+found.  The exact URLs found are places in @G_HOST{FOUND}.
+
+Example:
+
+	if(wexist('/,@cgibins,mycgibin','bad.cgi')){
+		# bad.cgi was found
+	}
+
+
+---------------
+wdiscoverdir
+---------------
+Parameters:	$dir
+Returns:	1 or 0
+
+Checks to see if the given directory exists; returns 1 if
+it does, or 0 if it doesn't.  Internally looks into the
+G_HOST{TRACK} cache, and always returns 1 if 
+G_CONFIG{alldirs} is set.
+
+
+---------------
+wserver
+---------------
+Parameters:	$server_token
+Returns:	1 or 0
+
+If the provided $server_token is found in any of the found
+server banners, it will return 1.  Otherwise it returns 0.
+Wserver() will also return 1 if the 'allservers' G_CONFIG
+option is set.
+
+Example:
+
+	if(wserver('apache')){
+		# do an apache test
+	}
+
+
+	if(wserver('apache/1.3.27')){
+		# do an apache/1.3.27 test
+	}
+
+	if(wserver('php')){
+		# do php tests
+	}
+
+
+
+---------------
+warrayhas
+---------------
+Parameters:	$array_name, $value
+Returns:	1 or 0
+
+Search the indicated whisker directory array to see if it 
+contains $value.  Returns a 1 if it is defined, 0 if it is not.
+
+Example:
+
+	# check to see if '.php3' in in the php_exts array
+	warrayhas('php_exts','.php3')
+
+
+
+
+
+
+
+-----------------------------------------------------------
+SECTION 5. TEST/PLUGIN WRITING GUIDELINES
+-----------------------------------------------------------
+
+This is just a collection of bullet-point recommendations for
+writing whisker tests and plugins.
+
+- Test IDs are not arbitrary.  Rfp.labs tracks the IDs of the
+default tests included with whisker.  If you start picking
+random numbers, you run the risk of duplicating an ID, which means
+the test stands the chance of not be run the second time.  In
+order to work around this, I suggest you include a unique prefix
+to your test IDs (the IDs do not need to be numeric).  For
+example, if your company 'Foobar Security' decides to make
+various tests, they can use the IDs 'fs1', 'fs2', etc.
+
+- If you only need one or two IDs for new tests, rather than
+spawn off third-party IDs, ask me to allocate you unique IDs
+instead.  This is another way of saying 'give me your test code,
+and I'll add it to the default whisker tests and assign you
+permanent IDs'.
+
+- It's extremely important to not break the hook chain in the
+d_* hooks, as you might cut off other functions from gaining
+access to data they need to properly analyze the site.
+
+- Don't use the override hooks unless you really know what you're
+doing.
+
+- Keep all test data in %G_HOST.  If you need to use outside
+structures/data variables, make sure to (re)initialize them
+using a function registered to the INIT hook; otherwise, you
+may reuse data from one host on the next (which may not be your
+intention; cookie analysis from host A should not show up in
+host B's report).
+
+- When possible, try to stick to the w* support functions
+(wexist, wtest, etc).  They will make your tests/plugins more
+portable across whisker versions.
+
+- Don't use full command line options if a yes-no/on-off answer
+is all you need--that's what tweaks are for.
+
+- If your plugin needs an absurd amount of tweak options, 
+consider consolodating your tweak values to a new dedicated 
+command line option.  See the default -c crawl option parameter
+in whisker for an example (all the crawl tweaks were put into 
+their own -c parameter option, since there are many of them).
+
+- If you do wind up making your own unique direct requests,
+attempt to pass results to the various _d* handlers (_d_response,
+_d_cookie, etc) in order to let other plugins and functions
+have access to the data you just received.  Look at it this way:
+you have nothing to lose, as you've already made the requst--
+might as well derive as much information as you can from the data
+you already have.  Don't waste precious data because you don't
+feel like sharing....
+
+- Before you start including billions of external modules, keep
+in mind that whisker's design goal is to be portable and not
+have external dependencies.  Also, double check the available
+functions in libwhisker, as there are many module functional
+equivalents included.  This particularly includes MD5 hashing,
+Data::Dumper dumping, multipart form request forming and parsing,
+etc.

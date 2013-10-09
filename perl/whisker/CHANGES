@@ -1,0 +1,28 @@
+----------------------------------------------------------------------------
+
+[] whisker 2.1
+
+- Fixed a bug in sec2print() (minutes weren't printed), found by
+filipe[at]rnl.ist.utl.pt
+
+- Incorrectly referencing 'targate' instead of 'target'.  Found by
+backd_1600[at]yahoo.fr.
+
+- *Tons* of other changes--so many it's not worth individually documenting,
+since 2.0 was alpha and 2.1 made many overhauls of entire subsystems.
+
+- Finally got around to the start of the documentation.
+
+- Added the newbie.help guided configuration walkthrough, for all those
+who are lost without prompts and/or a GUI.
+
+- Lots of .test updates, although not as many new signatures as other scanners. I am also not including checks for files which are vulnerable for cross-site scripting.
+
+----------------------------------------------------------------------------
+
+[] whisker 2.0
+
+- Initial release
+
+----------------------------------------------------------------------------
+

@@ -1,0 +1,181 @@
+# whisker 2.x HTML output plugin
+# version 1.0
+#
+# note: this is not the best example of a plugin, but it does show how it's
+# possible to modify whisker to a large degree
+#
+
+package html_plugin;
+
+# register option handler; we use the 'H' tweak
+$whisker::G_CONFIG{'tweaks_usage'}.="           H  HTML format output\n";
+push @{$whisker::G_HOOKS{OPTIONS}}, \&html_options;
+
+# some internal variables
+$item_count=0;
+$host_count=0;
+$in_host=0;
+@host_items=();
+
+
+##### support functions below #############################################
+
+sub html_options {
+	my $ref=shift;
+
+	if(defined $ref->{T} && $ref->{T}=~/H/){
+		# register ourselves
+		push @{$whisker::G_HOOKS{INIT}},	\&html_start;
+		push @{$whisker::G_HOOKS{START}},	\&html_host_start;
+		push @{$whisker::G_HOOKS{FINISH}},	\&html_host_end;
+		push @{$whisker::G_HOOKS{EXIT}},	\&html_end;
+		$whisker::G_HOOKS{wdisplay}=\&html_wdisplay;
+	}
+}
+
+
+sub html_start {
+	my $begin = <<EOT;
+<html><head><title>Whisker $whisker::G_CONFIG{VERSION} scan results</title></head>
+<body bgcolor=#ffffff text=#304870 link=#000000 vlink=#000000 alink=#ffffff>
+EOT
+	html_write($begin);
+}
+
+sub html_end {
+	html_write("</body></html>\n");
+}
+
+sub html_host_start {
+	$item_count=0;
+	$host_count++;
+	$in_host=1;
+	@host_items=();
+	my $header = <<EOT;
+<table align=center width=90% cellspacing=0 cellpadding=0>
+  <tr><td valign=top width=100%>
+	<table width=100% border=0 cellspacing=0 cellpadding=1>
+	<tr><td bgcolor=#506890>
+		<table width=100% border=0 cellspacing=0 cellpadding=4>
+		<tr><td valign=top width=100% bgcolor=#d0d8e8>
+		<font face="arial,helvetica,sans-serif" size="4">
+		&nbsp; Scan results for $whisker::G_CONFIG{target}</font><p>
+			<table width=100% border=0 cellspacing=0 cellpadding=2>
+
+EOT
+	html_write($header);
+}
+
+sub html_host_end {
+	$in_host=0;
+	my $footer = <<EOT;
+			</table>
+		</td><td valign=top width="40%" bgcolor=#d0d8e8>
+		<table width=100% border=0 cellspacing=0 cellpadding=1>
+		<tr><td bgcolor=#506890>
+			<table width=100% border=0 cellspacing=0 cellpadding=3>
+			<tr><td bgcolor=#ffffff nowrap><font face="arial,helvetica,sans-serif" size=2>
+			<b>Item index</b>
+			</td></tr>
+			<tr><td bgcolor=#ffffff nowrap><font face="arial,helvetica,sans-serif" size=2>
+EOT
+	html_write($footer);
+
+	my $links='<li>'.join("<br>\n<li>",@host_items);
+	html_write($links);
+
+	$footer = <<EOT;
+			<br>
+			</td></tr>
+			</td></tr></table>
+		</td></tr></table>
+		</td></tr></table>
+	</td></tr></table>
+</td></tr></table>
+EOT
+	html_write($footer);
+}
+
+
+sub html_write {
+	my $data=shift;
+		syswrite($whisker::G_CONFIG{OUT},$data,length($data)) 
+			if(defined $whisker::G_CONFIG{OUT});
+		syswrite($whisker::G_CONFIG{LOG},$data,length($data)) 
+			if(defined $whisker::G_CONFIG{LOG});
+}
+
+sub html_wdisplay {
+	my %opts = @_;
+
+	return if($in_host==0);
+	$item_count++;
+	$opts{text}=~s/\n/<br>\n/g if(defined $opts{text});
+
+	if(defined $opts{type} && $opts{type} eq 'progress'){
+		# we dont' print these
+		return;
+	}	
+
+	if(defined $opts{type} && $opts{type} eq 'raw'){
+		return;
+		$out="<tr><td colspan=2><font face=\"arial,helvetica,sans-serif\">\n";
+		$out.=$opts{text};
+		$out.="<p></td></tr>\n";
+		html_write($out);
+		return;
+	}
+
+	delete $opts{type};
+
+	my $title=$opts{title}||'';
+	my $id=$opts{id}||'-';
+
+	delete $opts{id};
+	delete $opts{title};
+
+	my $an='host'.$host_count.'item'.$item_count;
+	push @host_items, "<a href=\"#$an\">Id $id $title</a>";
+
+	$out=<<EOT;
+	<tr><td width="50" nowrap bgcolor="#c0c8d8"><font face="arial,helvetica,sans-serif">
+	<a name="$an">
+	<b>Id: $id</b></font></td><td nowrap bgcolor="#c0c8d8"><font face="arial,helvetica,sans-serif">
+	<b>$title</b></font></td></tr>
+EOT
+
+	if(defined $opts{urls}){
+		$out.=<<EOT;
+		<tr><td colspan=2 nowrap><small>
+		<font color=#808ca0 face="arial,helvetica,sans-serif">&nbsp;&nbsp;
+EOT
+		$opts{urls}=~s/\n/<br>\n\&nbsp;\&nbsp; /g;
+		$out.="$opts{urls}\n";
+		delete $opts{urls};
+		$out.="</small></td></tr>\n";
+	}
+
+	$out.="<tr><td colspan=2><div align=justify><small>\n";
+	$out.="<font face=\"arial,helvetica,sans-serif\">\n";
+
+	my @special=qw(bid cve severity);
+	foreach (@special) { 
+		if(defined $opts{$_}){
+			$out.='<b>'.ucfirst($_).':</b> '.$opts{$_}."<br>\n";
+			delete $opts{$_};}}
+
+
+	while( ($k,$v)=each %opts){
+		next if($k eq 'text' || $k eq 'reference');
+		$out.='<b>'.ucfirst($k).":</b> $v<br>\n"; }
+
+	$out.="<p>\n";
+	$out.=$opts{text}."<p>\n" if(defined $opts{text});
+	$out.="<br>\n<b>References:</b><br>\n".$opts{reference}."<p>\n"
+		if(defined $opts{reference});
+	$out.="\n</font></small></div></td></tr>\n";
+	html_write($out);
+}
+
+
+1;
